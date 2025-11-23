@@ -1,0 +1,267 @@
+name: Backend Iteration Report Generator
+
+on:
+  workflow_run:
+    workflows: ["Backend Iterations - Tests"]
+    types:
+      - completed
+
+jobs:
+  generate-backend-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Wait for test workflow to complete
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const workflowRunId = context.payload.workflow_run.id;
+          const status = context.payload.workflow_run.status;
+          const conclusion = context.payload.workflow_run.conclusion;
+          
+          console.log(`Workflow Run ID: ${workflowRunId}`);
+          console.log(`Status: ${status}`);
+          console.log(`Conclusion: ${conclusion}`);
+          
+          if (status !== 'completed') {
+            throw new Error('Test workflow has not completed yet');
+          }
+          
+          // Wait a bit more to ensure everything is committed
+          await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.workflow_run.head_branch }}
+        fetch-depth: 0  # Fetch all history for complete analysis
+
+    - name: Setup Node.js for date calculations
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Generate Backend Iteration Report
+      run: |
+        echo "# 📊 Backend Iteration Development Report" > backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        echo "**Generated:** $(TZ=Europe/Helsinki date '+%d.%m.%Y %H:%M:%S')" >> backend-iteration-report.md
+        echo "**Triggered by:** [${{ github.actor }}](https://github.com/${{ github.actor }})" >> backend-iteration-report.md
+        echo "**User ID:** ${{ github.actor_id }}" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        # Get all backend iteration-related commits
+        echo "## 📝 Backend Iteration Commits Summary" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        for iter in 1 2 3 4 5; do
+          echo "### Iteration $iter - Backend" >> backend-iteration-report.md
+          echo "" >> backend-iteration-report.md
+          
+          # Find commits with iteration tags
+          COMMITS=$(git log --all --grep="\[iter$iter\]" --grep="\[iteration-$iter\]" --grep="\[iteration $iter\]" -i --pretty=format:"%h|%an|%ae|%ad|%s" --date=iso)
+          
+          if [ -z "$COMMITS" ]; then
+            echo "❌ No commits found" >> backend-iteration-report.md
+            echo "" >> backend-iteration-report.md
+          else
+            echo "| Commit | Author | Email | Timestamp (Finnish Time) | Message |" >> backend-iteration-report.md
+            echo "|--------|--------|-------|--------------------------|---------|" >> backend-iteration-report.md
+            
+            echo "$COMMITS" | while IFS='|' read -r hash author email date message; do
+              # Convert timestamp to Finnish time (UTC+2/+3)
+              # Parse the ISO date format (YYYY-MM-DD HH:MM:SS +ZZZZ)
+              UTC_TIMESTAMP=$(echo "$date" | sed 's/ [+-][0-9]\{4\}$//')
+              
+              # Convert to Finnish time using TZ
+              if command -v date >/dev/null 2>&1; then
+                FINNISH_DATETIME=$(TZ=Europe/Helsinki date -d "$UTC_TIMESTAMP" '+%d.%m.%Y %H:%M:%S' 2>/dev/null)
+                if [ -z "$FINNISH_DATETIME" ]; then
+                  # Fallback: try BSD date format
+                  FINNISH_DATETIME=$(TZ=Europe/Helsinki date -j -f "%Y-%m-%d %H:%M:%S" "$UTC_TIMESTAMP" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || echo "$date")
+                fi
+              else
+                FINNISH_DATETIME="$date"
+              fi
+              
+              echo "| [\`$hash\`](https://github.com/${{ github.repository }}/commit/$hash) | $author | $email | $FINNISH_DATETIME | $message |" >> backend-iteration-report.md
+            done
+            echo "" >> backend-iteration-report.md
+          fi
+        done
+        
+        # Statistics section
+        echo "## 📈 Backend Development Statistics" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        # Count commits per iteration
+        echo "### Backend Commits per Iteration" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        echo "| Iteration | Commit Count | Tests |" >> backend-iteration-report.md
+        echo "|-----------|--------------|-------|" >> backend-iteration-report.md
+        
+        TOTAL_ITER_COMMITS=0
+        for iter in 1 2 3 4 5; do
+          COUNT=$(git log --all --grep="\[iter$iter\]" --grep="\[iteration-$iter\]" --grep="\[iteration $iter\]" -i --oneline | wc -l)
+          TEST_FILE="tests/iterations/iteration${iter}.test.js"
+          if [ -f "$TEST_FILE" ]; then
+            TEST_COUNT=$(grep -c "it('should\|it(\"should" "$TEST_FILE" || echo "0")
+            echo "| Iteration $iter | $COUNT | $TEST_COUNT |" >> backend-iteration-report.md
+          else
+            echo "| Iteration $iter | $COUNT | N/A |" >> backend-iteration-report.md
+          fi
+          TOTAL_ITER_COMMITS=$((TOTAL_ITER_COMMITS + COUNT))
+        done
+        echo "| **Total** | **$TOTAL_ITER_COMMITS** | - |" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        # Contributor statistics
+        echo "### 👥 Backend Contributor Statistics" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        # Get unique contributors for backend iteration commits
+        CONTRIBUTORS=$(git log --all --grep="\[iter" -i --pretty=format:"%an|%ae|%aI" | sort | uniq)
+        
+        if [ -n "$CONTRIBUTORS" ]; then
+          echo "| Author | Email | Commits | Last Commit (Finnish Time) |" >> backend-iteration-report.md
+          echo "|--------|-------|---------|---------------------------|" >> backend-iteration-report.md
+          
+          echo "$CONTRIBUTORS" | while IFS='|' read -r author email timestamp; do
+            AUTHOR_COMMITS=$(git log --all --grep="\[iter" -i --author="$email" --oneline | wc -l)
+            # Convert ISO timestamp to Finnish time with full datetime
+            if [ -n "$timestamp" ]; then
+              FINNISH_TIME=$(TZ=Europe/Helsinki date -d "$timestamp" '+%d.%m.%Y %H:%M:%S' 2>/dev/null)
+              if [ -z "$FINNISH_TIME" ]; then
+                # Fallback: try BSD date format
+                FINNISH_TIME=$(TZ=Europe/Helsinki date -j -f "%Y-%m-%dT%H:%M:%S" "$(echo $timestamp | cut -d'+' -f1)" '+%d.%m.%Y %H:%M:%S' 2>/dev/null || echo "$timestamp")
+              fi
+            else
+              FINNISH_TIME="N/A"
+            fi
+            echo "| [$author](https://github.com/$author) | $email | $AUTHOR_COMMITS | $FINNISH_TIME |" >> backend-iteration-report.md
+          done
+          echo "" >> backend-iteration-report.md
+        fi
+        
+        # Timeline analysis
+        echo "### 📅 Backend Development Timeline" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        FIRST_ITER_COMMIT=$(git log --all --grep="\[iter" -i --reverse --pretty=format:"%ad" --date=short | head -1)
+        LAST_ITER_COMMIT=$(git log --all --grep="\[iter" -i --pretty=format:"%ad" --date=short | head -1)
+        
+        if [ -n "$FIRST_ITER_COMMIT" ] && [ -n "$LAST_ITER_COMMIT" ]; then
+          # Convert to Finnish format
+          FIRST_DATE=$(echo "$FIRST_ITER_COMMIT" | tr '-' '.')
+          LAST_DATE=$(echo "$LAST_ITER_COMMIT" | tr '-' '.')
+          
+          echo "- **First iteration commit:** $FIRST_DATE" >> backend-iteration-report.md
+          echo "- **Latest iteration commit:** $LAST_DATE" >> backend-iteration-report.md
+          
+          # Calculate days between first and last commit
+          if command -v date &> /dev/null; then
+            START_DATE=$(date -d "$FIRST_ITER_COMMIT" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$FIRST_ITER_COMMIT" +%s 2>/dev/null || echo "0")
+            END_DATE=$(date -d "$LAST_ITER_COMMIT" +%s 2>/dev/null || date -j -f "%Y-%m-%d" "$LAST_ITER_COMMIT" +%s 2>/dev/null || echo "0")
+            
+            if [ "$START_DATE" != "0" ] && [ "$END_DATE" != "0" ]; then
+              DAYS_DIFF=$(( (END_DATE - START_DATE) / 86400 ))
+              echo "- **Development period:** $DAYS_DIFF days" >> backend-iteration-report.md
+              
+              if [ $DAYS_DIFF -gt 0 ] && [ $TOTAL_ITER_COMMITS -gt 0 ]; then
+                AVG_COMMITS=$(echo "scale=2; $TOTAL_ITER_COMMITS / ($DAYS_DIFF + 1)" | bc 2>/dev/null || echo "N/A")
+                echo "- **Average commits per day:** $AVG_COMMITS" >> backend-iteration-report.md
+              fi
+            fi
+          fi
+        fi
+        echo "" >> backend-iteration-report.md
+        
+        # Test status section
+        echo "## ✅ Last Iteration Test Status" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        # Get the most recent iteration commit
+        LAST_ITER=$(git log --all --grep="\[iter" -i --pretty=format:"%s" | head -1 | grep -oE "iter[0-9]" | grep -oE "[0-9]")
+        
+        if [ -n "$LAST_ITER" ]; then
+          TEST_FILE="tests/iterations/iteration${LAST_ITER}.test.js"
+          echo "**Most Recent Iteration:** Iteration $LAST_ITER" >> backend-iteration-report.md
+          
+          if [ -f "$TEST_FILE" ]; then
+            echo "**Test File:** \`$TEST_FILE\`" >> backend-iteration-report.md
+            # Try to detect from recent workflow runs
+            if [ "${{ github.event.workflow_run.conclusion }}" = "success" ]; then
+              echo "**Test Status:** ✅ PASSED" >> backend-iteration-report.md
+            elif [ "${{ github.event.workflow_run.conclusion }}" = "failure" ]; then
+              echo "**Test Status:** ❌ FAILED" >> backend-iteration-report.md
+            else
+              echo "**Test Status:** ⏳ Check workflow results" >> backend-iteration-report.md
+            fi
+          else
+            echo "**Test Status:** ⚠️ Test file not found" >> backend-iteration-report.md
+          fi
+        fi
+        echo "" >> backend-iteration-report.md
+        
+        # Test coverage section
+        echo "## 🧪 Backend Test Coverage" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        TOTAL_TESTS=0
+        for iter in 1 2 3 4 5; do
+          TEST_FILE="tests/iterations/iteration${iter}.test.js"
+          if [ -f "$TEST_FILE" ]; then
+            TEST_COUNT=$(grep -c "it('should\|it(\"should" "$TEST_FILE" || echo "0")
+            TOTAL_TESTS=$((TOTAL_TESTS + TEST_COUNT))
+            echo "- **Iteration $iter:** $TEST_COUNT tests" >> backend-iteration-report.md
+          fi
+        done
+        echo "- **Total:** $TOTAL_TESTS tests" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        
+        # Repository info
+        echo "## 🔗 Repository Information" >> backend-iteration-report.md
+        echo "" >> backend-iteration-report.md
+        echo "- **Repository:** [${{ github.repository }}](https://github.com/${{ github.repository }})" >> backend-iteration-report.md
+        echo "- **Branch:** ${{ github.ref_name }}" >> backend-iteration-report.md
+        echo "- **Commit SHA:** [\`${{ github.sha }}\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" >> backend-iteration-report.md
+        echo "- **Workflow Run:** [${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" >> backend-iteration-report.md
+        echo "- **Triggered by:** [${{ github.actor }}](https://github.com/${{ github.actor }})" >> backend-iteration-report.md
+
+    - name: Upload Report as Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: backend-iteration-report-${{ github.run_number }}
+        path: backend-iteration-report.md
+        retention-days: 90
+
+    - name: Add Report to Job Summary
+      run: |
+        if [ -f backend-iteration-report.md ]; then
+          echo "Report file found, adding to summary..."
+          cat backend-iteration-report.md >> $GITHUB_STEP_SUMMARY
+          echo ""
+          echo "=== Report Content Preview ==="
+          cat backend-iteration-report.md
+          echo "=== End of Report ==="
+          echo "Report added successfully to GitHub Actions Summary!"
+        else
+          echo "ERROR: backend-iteration-report.md not found!"
+          ls -la
+          exit 1
+        fi
+
+    - name: Comment Report on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const report = fs.readFileSync('backend-iteration-report.md', 'utf8');
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: report
+          });
